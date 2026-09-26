@@ -119,8 +119,24 @@ assert_readonly_npu() {
 	require_file "$rpc"
 	require_file "$acl"
 	require_file "$ui"
-	if grep -Eq 'setGovernor|setMaxFreq|setOverclock|scaling_governor.*write|scaling_max_freq.*write' "$rpc" "$acl" "$ui"; then
-		die "the NPU package still exposes a write/overclock control"
+
+	# Validate the actual control surface, then verify that no private mutator
+	# or register/sysfs write survived the read-only patch.  Printing matching
+	# lines makes a future upstream change diagnosable directly from CI logs.
+	if grep -En 'setGovernor|setMaxFreq|setOverclock' "$rpc" "$acl" "$ui"; then
+		die "the NPU package still exposes a public write/overclock control"
+	fi
+	if grep -En '"write"[[:space:]]*:' "$acl"; then
+		die "the NPU ACL still grants write access"
+	fi
+	if grep -En '^[[:space:]]*(set_governor|set_max_freq|set_overclock)[[:space:]]*\(\)' "$rpc"; then
+		die "the NPU backend still contains a CPU/NPU mutator"
+	fi
+	if grep -En '^[[:space:]]*devmem[[:space:]]+[^[:space:]]+[[:space:]]+(8|16|32|64)[[:space:]]+' "$rpc"; then
+		die "the NPU backend still contains a devmem write"
+	fi
+	if grep -En '>[[:space:]]*/sys/devices/system/cpu/cpufreq/[^[:space:]]+/scaling_(governor|max_freq)' "$rpc"; then
+		die "the NPU backend still contains a CPU frequency write"
 	fi
 }
 

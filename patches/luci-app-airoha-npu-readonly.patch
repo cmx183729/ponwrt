@@ -158,8 +158,250 @@ index 599c81f..3d04632 100644
 +# Airoha SoC Status RPC backend for LuCI (NPU + CPU, read-only)
  
  . /lib/functions.sh
+
+@@ -105,77 +105,6 @@ read_armpll_mhz() {
+ 	esac
+ }
  
-@@ -596,7 +596,7 @@ get_frame_engine() {
+-# Switch the CPU clock mux, mirroring clk_src_switch(). Fails if the mux does
+-# not read back as requested - ATF checks this too, and carrying on with a
+-# half-switched mux is a good way to hang the board.
+-clk_src_switch() {
+-	local src="$1" val
+-
+-	# xtal is always on and has no gate; every other source needs one.
+-	if [ "$src" -ne 0 ]; then
+-		val=$(devmem $CR_CPU_CLK_GATING)
+-		devmem $CR_CPU_CLK_GATING 32 $(printf "0x%08X" $(( $val | (1 << (src - 1)) )))
+-	fi
+-
+-	# L2C SRAM interface and MCU_BIU clock divider.
+-	val=$(devmem $CR_ACLKEN_DIV)
+-	devmem $CR_ACLKEN_DIV 32 $(printf "0x%08X" $(( ($val & 0xFFFFFFE0) | 0x12 )))
+-
+-	val=$(devmem $CR_BUS_PLL_DIV)
+-	devmem $CR_BUS_PLL_DIV 32 $(printf "0x%08X" $(( ($val & 0xFFFFF9FF) | (src << 9) )))
+-
+-	val=$(devmem $CR_BUS_PLL_DIV)
+-	[ $(( ($val >> 9) & 3 )) -eq "$src" ]
+-}
+-
+-clk_src_gate_off() {
+-	local src="$1" val
+-
+-	val=$(devmem $CR_CPU_CLK_GATING)
+-	devmem $CR_CPU_CLK_GATING 32 $(printf "0x%08X" $(( $val & ~(1 << (src - 1)) )))
+-}
+-
+-pll_write_protect() {
+-	local val
+-
+-	val=$(devmem $CR_PLL_WR_PROTECT)
+-	case "$1" in
+-	off) val=$(( ($val & 0xFFFFFF00) | WT_PROTECT_MAGIC )) ;;
+-	on)  val=$(( $val & 0xFFFFFF00 )) ;;
+-	*)   return 1 ;;
+-	esac
+-	devmem $CR_PLL_WR_PROTECT 32 $(printf "0x%08X" $val)
+-}
+-
+-# Program PCW and POSDIV, then toggle the CHG bit so the PLL latches them.
+-# EN7581 keeps POSDIV and CHG in one register, so both go out in a single
+-# write. AN7583 spreads PCW, POSDIV and CHG over three separate registers.
+-configure_armpll() {
+-	local soc="$1" pcw="$2" posdiv="$3" val
+-
+-	val=$(devmem $CR_CPUPLL_SDM_PCW)
+-	devmem $CR_CPUPLL_SDM_PCW 32 \
+-		$(printf "0x%08X" $(( ($val & 0x00FFFFFF) | (pcw << 24) )))
+-
+-	if [ "$soc" = "an7583" ]; then
+-		val=$(devmem $CR_CPUPLL_SDM_POSDIV)
+-		devmem $CR_CPUPLL_SDM_POSDIV 32 \
+-			$(printf "0x%08X" $(( ($val & 0xFFE3FFFF) | (posdiv << 18) )))
+-
+-		val=$(($(devmem $CR_CPUPLL_SDM_PCW_CHG)))
+-	else
+-		val=$(($(devmem $CR_CPUPLL_SDM_PCW_CHG)))
+-		val=$(( ($val & 0xFFFFFF8F) | (posdiv << 4) ))
+-	fi
+-
+-	if [ $(( $val & 1 )) -eq 1 ]; then
+-		val=$(( $val & ~1 ))
+-	else
+-		val=$(( $val | 1 ))
+-	fi
+-	devmem $CR_CPUPLL_SDM_PCW_CHG 32 $(printf "0x%08X" $val)
+-}
+-
+ get_status() {
+ 	# === NPU Status ===
+ 	# Read the actually-loaded NPU firmware path from DTS (firmware-name property).
+@@ -394,144 +323,25 @@ get_token_info() {
+ 	' "$token_file" 2>/dev/null || printf '{"token_count":0,"token_size":0,"npu_active":false,"tx_queues":[],"station_counts":[%s]}' "$sta_json"
+ }
+ 
+-set_governor() {
+-	local governor
+-	governor=$(echo "$1" | jsonfilter -e "@.governor" 2>/dev/null)
+-
+-	if [ -z "$governor" ]; then
+-		echo '{"error":"missing governor parameter"}'
+-		return
+-	fi
+-
+-	# Validate governor is available
+-	local avail=$(cat /sys/devices/system/cpu/cpufreq/policy0/scaling_available_governors 2>/dev/null)
+-	if ! echo "$avail" | grep -qw "$governor"; then
+-		printf '{"error":"invalid governor: %s"}' "$governor"
+-		return
+-	fi
+-
+-	echo "$governor" > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
+-	if [ $? -eq 0 ]; then
+-		printf '{"result":"ok","governor":"%s"}' "$governor"
+-	else
+-		echo '{"error":"failed to set governor"}'
+-	fi
+-}
+-
+-# Every frequency the policy will currently accept in scaling_max_freq.
+-# Boost steps live in their own file and are absent from
+-# scaling_available_frequencies, so a board whose max sits on one - AN7583
+-# with the 1500-1600 MHz steps, for instance - otherwise reports a current
+-# value that is in no list, which leaves the picker with nothing to select
+-# and makes the value impossible to set again. They only count while the
+-# boost knob is on; with it off the kernel refuses them.
+-cpufreq_selectable() {
+-	local path=/sys/devices/system/cpu/cpufreq/policy0
+-	local freqs
+-
+-	freqs=$(cat "$path/scaling_available_frequencies" 2>/dev/null)
+-	if [ "$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" = "1" ]; then
+-		freqs="$freqs $(cat "$path/scaling_boost_frequencies" 2>/dev/null)"
+-	fi
+-
+-	echo "$freqs"
+-}
+-
+-set_max_freq() {
+-	local freq
+-	freq=$(echo "$1" | jsonfilter -e "@.freq" 2>/dev/null)
+-
+-	if [ -z "$freq" ]; then
+-		echo '{"error":"missing freq parameter"}'
+-		return
+-	fi
+-
+-	# Validate freq is in available list
+-	local avail=$(cpufreq_selectable)
+-	if ! echo "$avail" | grep -qw "$freq"; then
+-		printf '{"error":"invalid frequency: %s"}' "$freq"
+-		return
+-	fi
+-
+-	echo "$freq" > /sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq 2>/dev/null
+-	if [ $? -eq 0 ]; then
+-		printf '{"result":"ok","freq":%d}' "$freq"
+-	else
+-		echo '{"error":"failed to set max frequency"}'
+-	fi
+-}
+-
+-set_overclock() {
+-	local target_mhz soc posdiv pcw_int actual
+-
+-	target_mhz=$(echo "$1" | jsonfilter -e "@.freq_mhz" 2>/dev/null)
+-
+-	if [ -z "$target_mhz" ]; then
+-		echo '{"error":"missing freq_mhz parameter"}'
+-		return
+-	fi
+-
+-	# There is no voltage control on this hardware - the AVS path in BL31 is
+-	# compiled out - so everything above stock runs at stock voltage.
+-	if [ "$target_mhz" -lt "$AIROHA_OC_MIN_MHZ" ] || [ "$target_mhz" -gt "$AIROHA_OC_MAX_MHZ" ]; then
+-		printf '{"error":"frequency must be %d-%d MHz"}' "$AIROHA_OC_MIN_MHZ" "$AIROHA_OC_MAX_MHZ"
+-		return
+-	fi
+-
+-	if ! command -v devmem > /dev/null 2>&1; then
+-		echo '{"error":"devmem not available"}'
+-		return
+-	fi
+-
+-	soc=$(airoha_soc)
+-	if ! soc_pll_regs "$soc"; then
+-		printf '{"error":"unsupported SoC: %s"}' "$soc"
+-		return
+-	fi
+-
+-	# Same split as cpu_freq_config_posdiv[] in ATF.
+-	if [ "$target_mhz" -lt 1000 ]; then
+-		posdiv=1
+-		pcw_int=$((target_mhz / 25))
+-	else
+-		posdiv=0
+-		pcw_int=$((target_mhz / 50))
+-	fi
+-
+-	# Lock the governor to performance. Any set_performance_state - a governor
+-	# change, or thermal throttling at the 95C trip - makes BL31 reprogram the
+-	# PLL back to one of its own table entries and silently undo this.
+-	echo performance > /sys/devices/system/cpu/cpufreq/policy0/scaling_governor 2>/dev/null
+-
+-	# From here on the order follows en7523_armpll_set().
+-	if ! clk_src_switch $CLK_SRC_PLL2; then
+-		clk_src_gate_off $CLK_SRC_PLL2
+-		echo '{"error":"failed to switch cpu clock to pll2"}'
+-		return
+-	fi
+-
+-	pll_write_protect off
+-	configure_armpll "$soc" "$pcw_int" "$posdiv"
+-
+-	# ATF waits 0.5 us before switching back.
+-	sleep 0.02 2>/dev/null || sleep 1
+-
+-	if ! clk_src_switch $CLK_SRC_ARMPLL; then
+-		pll_write_protect on
+-		echo '{"error":"failed to switch cpu clock back to armpll"}'
+-		return
+-	fi
+-
+-	clk_src_gate_off $CLK_SRC_PLL2
+-	pll_write_protect on
+-
+-	# Verify against the registers rather than trusting the writes.
+-	actual=$(read_armpll_mhz "$soc")
+-
+-	printf '{"result":"ok","soc":"%s","target_mhz":%d,"actual_mhz":%d,"pcw":%d,"posdiv":%d}' \
+-		"$soc" "$target_mhz" "$actual" "$pcw_int" "$posdiv"
+-}
+-
++# Every frequency the policy will currently accept in scaling_max_freq.
++# Boost steps live in their own file and are absent from
++# scaling_available_frequencies, so a board whose max sits on one - AN7583
++# with the 1500-1600 MHz steps, for instance - otherwise reports a current
++# value that is in no list, which leaves the picker with nothing to select
++# and makes the value impossible to set again. They only count while the
++# boost knob is on; with it off the kernel refuses them.
++cpufreq_selectable() {
++	local path=/sys/devices/system/cpu/cpufreq/policy0
++	local freqs
++
++	freqs=$(cat "$path/scaling_available_frequencies" 2>/dev/null)
++	if [ "$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null)" = "1" ]; then
++		freqs="$freqs $(cat "$path/scaling_boost_frequencies" 2>/dev/null)"
++	fi
++
++	echo "$freqs"
++}
++
+ get_frame_engine() {
+ 	if ! command -v devmem > /dev/null 2>&1; then
+ 		echo '{"error":"devmem not available"}'
+@@ -596,7 +387,7 @@ get_frame_engine() {
  
  case "$1" in
  	list)
