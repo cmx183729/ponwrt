@@ -1,0 +1,154 @@
+name: Build XG-040G-MD
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+      - main
+    paths:
+      - .github/workflows/xg040g-md.yml
+      - configs/xg040g-md.config
+      - scripts/xg040g-md-feeds.sh
+      - patches/luci-app-airoha-npu-readonly.patch
+      - package/xg040-local/**
+      - feeds.conf.default
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xg040g-md-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: XG-040G-MD / AN7581 / Linux 6.18
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Free build space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          sudo apt-get clean
+
+      - name: Install build dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler flex gawk \
+            gettext git g++-multilib gcc-multilib gperf help2man intltool \
+            libelf-dev libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev \
+            libmpfr-dev libncurses-dev libpython3-dev libreadline-dev libssl-dev \
+            libtool libyaml-dev lld llvm ninja-build p7zip-full patch pkgconf \
+            python3 python3-docutils python3-pip python3-ply python3-pyelftools \
+            qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo \
+            uglifyjs unzip wget xmlto xxd zlib1g-dev zstd
+
+      - name: Restore source and compiler cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            dl
+            .ccache
+          key: xg040g-md-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'configs/an7581.config', 'configs/release.config', 'configs/xg040g-md.config', 'scripts/xg040g-md-feeds.sh', 'patches/luci-app-airoha-npu-readonly.patch', 'package/xg040-local/**') }}
+          restore-keys: |
+            xg040g-md-${{ runner.os }}-
+
+      - name: Install base feeds
+        run: |
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+
+      - name: Fetch selected external packages
+        run: bash scripts/xg040g-md-feeds.sh
+
+      - name: Configure the protected single-device image
+        run: |
+          ./scripts/kconfig.pl + \
+            configs/an7581.config \
+            configs/release.config \
+            configs/xg040g-md.config > .config
+          make defconfig
+
+      - name: Verify target, offload, plugin and exclusion contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          required=(
+            'CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y'
+            'CONFIG_PACKAGE_airoha-en7581-npu-firmware=y'
+            'CONFIG_PACKAGE_luci-app-airoha-npu=y'
+            'CONFIG_PACKAGE_kmod-nf-flow=y'
+            'CONFIG_PACKAGE_kmod-nft-offload=y'
+            'CONFIG_PACKAGE_luci-app-openclash=y'
+            'CONFIG_PACKAGE_mihomo-meta=y'
+            'CONFIG_PACKAGE_xg040-openclash-core-link=y'
+            'CONFIG_PACKAGE_luci-app-mosdns=y'
+            'CONFIG_PACKAGE_mosdns=y'
+            'CONFIG_PACKAGE_adguardhome=y'
+            'CONFIG_PACKAGE_luci-app-store=y'
+            'CONFIG_PACKAGE_taskd=y'
+            'CONFIG_PACKAGE_luci-app-pbr=y'
+            'CONFIG_PACKAGE_luci-app-upnp=y'
+            'CONFIG_PACKAGE_odhcpd-ipv6only=y'
+            'CONFIG_PACKAGE_kmod-nf-nat6=y'
+          )
+          for setting in "${required[@]}"; do
+            grep -Fqx "$setting" .config || { echo "Missing: $setting" >&2; exit 1; }
+          done
+          excluded=(
+            '# CONFIG_PACKAGE_ttyd is not set'
+            '# CONFIG_PACKAGE_kmod-wireguard is not set'
+            '# CONFIG_PACKAGE_dockerd is not set'
+            '# CONFIG_PACKAGE_containerd is not set'
+            '# CONFIG_PACKAGE_podman is not set'
+            '# CONFIG_PACKAGE_collectd is not set'
+            '# CONFIG_PACKAGE_netdata is not set'
+            '# CONFIG_PACKAGE_tailscale is not set'
+            '# CONFIG_PACKAGE_zerotier is not set'
+          )
+          for setting in "${excluded[@]}"; do
+            grep -Fqx "$setting" .config || { echo "Unexpectedly selected: ${setting#\# }" >&2; exit 1; }
+          done
+          ! grep -Fqx 'CONFIG_NET_AIROHA_FLOW_STATS=y' target/linux/airoha/an7581/config-6.18
+          git diff --exit-code -- \
+            target/linux/airoha/an7581/base-files/etc/board.d/02_network \
+            target/linux/airoha/an7581/base-files/lib/upgrade/platform.sh \
+            target/linux/airoha/base-files/etc/board.d/03_pon_data \
+            target/linux/airoha/dts/an7581-nokia_xg-040g-md-common.dtsi \
+            target/linux/airoha/dts/an758x-nokia_xg-040g-ubi-parts.dtsi \
+            target/linux/airoha/image/an7581.mk
+
+      - name: Download sources
+        run: make download -j8
+
+      - name: Build firmware
+        run: make -j"$(nproc)"
+
+      - name: Collect XG-040G-MD artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          mapfile -t images < <(find bin/targets/airoha/an7581 -maxdepth 1 -type f -name '*xg-040g-md*' -print)
+          ((${#images[@]} > 0)) || { echo 'No XG-040G-MD image was produced' >&2; exit 1; }
+          cp -v "${images[@]}" release/
+          cp .config release/xg040g-md.config
+          (cd release && sha256sum * > sha256sums)
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: xg040g-md-${{ github.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14

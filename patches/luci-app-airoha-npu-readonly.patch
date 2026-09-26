@@ -1,0 +1,210 @@
+diff --git a/htdocs/luci-static/resources/view/airoha_npu/status.js b/htdocs/luci-static/resources/view/airoha_npu/status.js
+index c8d86ff..72b8e59 100644
+--- a/htdocs/luci-static/resources/view/airoha_npu/status.js
++++ b/htdocs/luci-static/resources/view/airoha_npu/status.js
+@@ -2,15 +2,11 @@
+ 'require view';
+ 'require poll';
+ 'require rpc';
+-'require ui';
+ 
+ var callNpuStatus = rpc.declare({ object: 'luci.airoha_npu', method: 'getStatus' });
+ var callPpeEntries = rpc.declare({ object: 'luci.airoha_npu', method: 'getPpeEntries' });
+ var callTokenInfo = rpc.declare({ object: 'luci.airoha_npu', method: 'getTokenInfo' });
+ var callFrameEngine = rpc.declare({ object: 'luci.airoha_npu', method: 'getFrameEngine' });
+-var callSetGovernor = rpc.declare({ object: 'luci.airoha_npu', method: 'setGovernor', params: ['governor'] });
+-var callSetMaxFreq = rpc.declare({ object: 'luci.airoha_npu', method: 'setMaxFreq', params: ['freq'] });
+-var callSetOverclock = rpc.declare({ object: 'luci.airoha_npu', method: 'setOverclock', params: ['freq_mhz'] });
+ 
+ /*
+  * Every colour below comes from the custom properties LuCI themes export,
+@@ -339,109 +335,12 @@ function updateFreqBar(hw, min, max, pll) {
+ 	if (ml) ml.textContent = fmtFreq(s.max);
+ }
+ 
+-function renderGovSelect(avail, active) {
+-	var gs = (avail||'').trim().split(/\s+/).filter(Boolean);
+-	if (!gs.length) return E('span',{},_('N/A'));
+-	return E('select', { 'id':'airoha-npu-governor-select','class':'cbi-input-select','style':'min-width:140px','change':function(ev){
+-		var sel=ev.target; sel.disabled=true;
+-		callSetGovernor(sel.value).then(function(r){
+-			if(r&&r.error) ui.addNotification(null,E('p',{},_('Error: %s').format(r.error)),'error');
+-		}).catch(function(e){
+-			ui.addNotification(null,E('p',{},_('Could not set the governor: %s').format(e.message)),'error');
+-		}).then(function(){ sel.disabled=false; });
+-	}}, gs.map(function(g){return E('option',{'value':g,'selected':g===active?'':null},g);}));
+-}
+-
+-function renderMaxFreqSelect(avail, cur) {
+-	var fs = (avail||'').trim().split(/\s+/).filter(Boolean);
+-	if (!fs.length) return E('span',{},_('N/A'));
+-	// scaling_max_freq is not always one of scaling_available_frequencies -
+-	// firmware that offers a step above the OPP table puts a value here that
+-	// the list does not contain, and a select with no matching option renders
+-	// blank. Carry the current value into the list so it can be displayed.
+-	if (cur && fs.indexOf(String(parseInt(cur))) < 0) {
+-		fs.push(String(parseInt(cur)));
+-		fs.sort(function(a,b){ return parseInt(a)-parseInt(b); });
+-	}
+-	return E('select', { 'id':'airoha-npu-maxfreq-select','class':'cbi-input-select','style':'min-width:140px','change':function(ev){
+-		var sel=ev.target; sel.disabled=true;
+-		callSetMaxFreq(parseInt(sel.value)).then(function(r){
+-			if(r&&r.error) ui.addNotification(null,E('p',{},_('Error: %s').format(r.error)),'error');
+-		}).catch(function(e){
+-			ui.addNotification(null,E('p',{},_('Could not set the maximum frequency: %s').format(e.message)),'error');
+-		}).then(function(){ sel.disabled=false; });
+-	}}, fs.map(function(f){return E('option',{'value':f,'selected':parseInt(f)===parseInt(cur)?'':null},(parseInt(f)/1000).toFixed(0)+' MHz');}));
+-}
+-
+ function socLabel(soc) {
+ 	if (soc === 'an7583') return 'AN7583';
+ 	if (soc === 'en7581') return 'AN7581';
+ 	return _('Unknown');
+ }
+ 
+-// The highest frequency this package has been run at on real hardware. The
+-// ceiling itself is the backend's (AIROHA_OC_MAX_MHZ), which a characterisation
+-// sweep may raise well past what anyone has tested.
+-var OC_TESTED_MHZ = 1400;
+-
+-// Ask before going past the frequency the package has been tested at. A
+-// blocking confirm() freezes the whole page and is styled by the browser,
+-// so use the LuCI modal and continue on its answer.
+-function confirmHighFreq(mhz) {
+-	return new Promise(function(resolve) {
+-		ui.showModal(_('Confirm overclock'), [
+-			E('p', {}, _('%d MHz is above %d MHz, which is as far as this has been tested. The board may run unstable or stop responding until it is power cycled.').format(mhz, OC_TESTED_MHZ)),
+-			E('div', { 'class': 'right' }, [
+-				E('button', { 'class': 'cbi-button', 'click': function() { ui.hideModal(); resolve(false); } }, _('Cancel')),
+-				' ',
+-				E('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() { ui.hideModal(); resolve(true); } }, _('Continue'))
+-			])
+-		]);
+-	});
+-}
+-
+-function applyOverclock(btn, mhz) {
+-	btn.disabled = true;
+-	btn.textContent = _('Applying...');
+-	return callSetOverclock(mhz).then(function(r) {
+-		if (r && r.error)
+-			ui.addNotification(null, E('p', {}, _('Failed: %s').format(r.error)), 'error');
+-		else if (r && r.result === 'ok')
+-			ui.addNotification(null, E('p', {}, _('CPU set to %d MHz').format(r.actual_mhz)), 'info');
+-	}).catch(function(e) {
+-		ui.addNotification(null, E('p', {}, _('Overclock request failed: %s').format(e.message)), 'error');
+-	}).then(function() {
+-		btn.disabled = false;
+-		btn.textContent = _('Apply');
+-	});
+-}
+-
+-function renderOcControls(soc, ocMin, ocMax) {
+-	// The PLL register map differs per SoC, so refuse to write anything when
+-	// the SoC was not identified rather than poking AN7581 addresses blindly.
+-	if (soc !== 'an7583' && soc !== 'en7581')
+-		return E('span',{'class':'airoha-npu-muted'},_('Not available: unrecognised SoC'));
+-
+-	// The bounds are the backend's, not a second copy of them: it is the side
+-	// that enforces them, and its ceiling is configurable.
+-	ocMin = parseInt(ocMin) || 500;
+-	ocMax = parseInt(ocMax) || 1600;
+-
+-	var inp = E('input',{'id':'airoha-npu-oc-input','type':'number','min':String(ocMin),'max':String(ocMax),'step':'50','value':String(Math.min(OC_TESTED_MHZ, ocMax)),'class':'cbi-input-text','style':'width:100px'});
+-	var btn = E('button',{'class':'cbi-button cbi-button-action','style':'margin-left:8px','click':function(){
+-		var f=parseInt(inp.value);
+-		if(isNaN(f)||f<ocMin||f>ocMax){ui.addNotification(null,E('p',{},_('The frequency must be between %d and %d MHz').format(ocMin,ocMax)),'error');return;}
+-		if(f>OC_TESTED_MHZ)
+-			confirmHighFreq(f).then(function(ok){ if(ok) applyOverclock(btn,f); });
+-		else
+-			applyOverclock(btn,f);
+-	}},_('Apply'));
+-	return E('div',{'style':'display:flex;align-items:center;gap:8px;flex-wrap:wrap'},[
+-		inp, E('span',{'class':'airoha-npu-muted'},'MHz'), btn,
+-		E('span',{'class':'airoha-npu-muted','style':'font-size:85%;margin-left:8px'},_('Direct PLL write, %d-%d MHz. Tested up to %d MHz.').format(ocMin,ocMax,OC_TESTED_MHZ))
+-	]);
+-}
+-
+ /* ── PPE Table ── */
+ function renderPpeRows(entries) {
+ 	return entries.slice(0,100).map(function(e) {
+@@ -488,9 +387,6 @@ return view.extend({
+ 				E('h3',{},_('CPU Frequency')),
+ 				E('table',{'class':'table'},[
+ 					E('tr',{'class':'tr'},[ E('td',{'class':'td','width':'33%'},E('strong',{},_('Current Frequency'))), E('td',{'class':'td'}, renderFreqBar(st.cpu_hw_freq,st.cpu_min_freq,st.cpu_max_freq,st.pll_freq_mhz)) ]),
+-					E('tr',{'class':'tr'},[ E('td',{'class':'td'},E('strong',{},_('Governor'))), E('td',{'class':'td'}, renderGovSelect(st.cpu_avail_governors,st.cpu_governor)) ]),
+-					E('tr',{'class':'tr'},[ E('td',{'class':'td'},E('strong',{},_('Max Frequency'))), E('td',{'class':'td'}, renderMaxFreqSelect(st.cpu_avail_freqs,st.cpu_max_freq)) ]),
+-					E('tr',{'class':'tr'},[ E('td',{'class':'td'},E('strong',{},_('Overclock'))), E('td',{'class':'td'}, renderOcControls(st.soc, st.oc_min_mhz, st.oc_max_mhz)) ]),
+ 					E('tr',{'class':'tr'},[ E('td',{'class':'td'},E('strong',{},_('CPU Cores'))), E('td',{'class':'td'},(st.cpu_count||0).toString()) ]),
+ 					E('tr',{'class':'tr'},[ E('td',{'class':'td'},E('strong',{},_('SoC'))), E('td',{'class':'td'},socLabel(st.soc)) ])
+ 				])
+@@ -533,8 +429,6 @@ return view.extend({
+ 				var entries = Array.isArray(ppe.entries)?ppe.entries:[];
+ 
+ 				updateFreqBar(st.cpu_hw_freq,st.cpu_min_freq,st.cpu_max_freq,st.pll_freq_mhz);
+-				var gs=document.getElementById('airoha-npu-governor-select'); if(gs&&!gs.matches(':focus')) gs.value=st.cpu_governor||'';
+-				var fs=document.getElementById('airoha-npu-maxfreq-select'); if(fs&&!fs.matches(':focus')) fs.value=(st.cpu_max_freq||0).toString();
+ 
+ 				var se=document.getElementById('airoha-npu-status');
+ 				if(se){se.innerHTML='';var sp=document.createElement('span');sp.className=st.npu_loaded?'label-success':'label-danger';sp.textContent=st.npu_loaded?(st.npu_device?_('Active (%s)').format(st.npu_device):_('Active')):_('Not Active');se.appendChild(sp);}
+diff --git a/root/usr/libexec/rpcd/luci.airoha_npu b/root/usr/libexec/rpcd/luci.airoha_npu
+index 599c81f..3d04632 100644
+--- a/root/usr/libexec/rpcd/luci.airoha_npu
++++ b/root/usr/libexec/rpcd/luci.airoha_npu
+@@ -1,6 +1,6 @@
+ #!/bin/sh
+ 
+-# Airoha SoC Status RPC backend for LuCI (NPU + CPU + Overclock)
++# Airoha SoC Status RPC backend for LuCI (NPU + CPU, read-only)
+ 
+ . /lib/functions.sh
+ 
+@@ -596,7 +596,7 @@ get_frame_engine() {
+ 
+ case "$1" in
+ 	list)
+-		echo '{"getStatus":{},"getPpeEntries":{},"getTokenInfo":{},"getFrameEngine":{},"setGovernor":{"governor":"str"},"setMaxFreq":{"freq":"int"},"setOverclock":{"freq_mhz":"int"}}'
++		echo '{"getStatus":{},"getPpeEntries":{},"getTokenInfo":{},"getFrameEngine":{}}'
+ 		;;
+ 	call)
+ 		case "$2" in
+@@ -609,18 +609,6 @@ case "$1" in
+ 			getTokenInfo)
+ 				get_token_info
+ 				;;
+-			setGovernor)
+-				read input
+-				set_governor "$input"
+-				;;
+-			setMaxFreq)
+-				read input
+-				set_max_freq "$input"
+-				;;
+-			setOverclock)
+-				read input
+-				set_overclock "$input"
+-				;;
+ 			getFrameEngine)
+ 				get_frame_engine
+ 				;;
+diff --git a/root/usr/share/rpcd/acl.d/luci-app-airoha-npu.json b/root/usr/share/rpcd/acl.d/luci-app-airoha-npu.json
+index dd02e21..5d4081d 100644
+--- a/root/usr/share/rpcd/acl.d/luci-app-airoha-npu.json
++++ b/root/usr/share/rpcd/acl.d/luci-app-airoha-npu.json
+@@ -1,15 +1,10 @@
+ {
+ 	"luci-app-airoha-npu": {
+-		"description": "Grant access to Airoha SoC status (NPU + CPU + Overclock)",
++		"description": "Grant read-only access to Airoha SoC status (NPU, CPU and Frame Engine)",
+ 		"read": {
+ 			"ubus": {
+ 				"luci.airoha_npu": [ "getStatus", "getPpeEntries", "getTokenInfo", "getFrameEngine" ]
+ 			}
+-		},
+-		"write": {
+-			"ubus": {
+-				"luci.airoha_npu": [ "setGovernor", "setMaxFreq", "setOverclock" ]
+-			}
+ 		}
+ 	}
+ }
