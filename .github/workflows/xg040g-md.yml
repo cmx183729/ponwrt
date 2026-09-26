@@ -10,7 +10,6 @@ on:
       - .github/workflows/xg040g-md.yml
       - configs/xg040g-md.config
       - scripts/xg040g-md-feeds.sh
-      - patches/luci-app-airoha-npu-readonly.patch
       - package/xg040-local/**
       - feeds.conf.default
 
@@ -59,7 +58,7 @@ jobs:
           path: |
             dl
             .ccache
-          key: xg040g-md-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'configs/an7581.config', 'configs/release.config', 'configs/xg040g-md.config', 'scripts/xg040g-md-feeds.sh', 'patches/luci-app-airoha-npu-readonly.patch', 'package/xg040-local/**') }}
+          key: xg040g-md-${{ runner.os }}-${{ hashFiles('feeds.conf.default', 'configs/an7581.config', 'configs/release.config', 'configs/xg040g-md.config', 'scripts/xg040g-md-feeds.sh', 'package/xg040-local/**') }}
           restore-keys: |
             xg040g-md-${{ runner.os }}-
 
@@ -87,6 +86,8 @@ jobs:
             'CONFIG_TARGET_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi=y'
             'CONFIG_PACKAGE_airoha-en7581-npu-firmware=y'
             'CONFIG_PACKAGE_luci-app-airoha-npu=y'
+            'CONFIG_KERNEL_DEVMEM=y'
+            'CONFIG_BUSYBOX_CONFIG_DEVMEM=y'
             'CONFIG_PACKAGE_kmod-nf-flow=y'
             'CONFIG_PACKAGE_kmod-nft-offload=y'
             'CONFIG_PACKAGE_luci-app-openclash=y'

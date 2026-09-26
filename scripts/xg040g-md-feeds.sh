@@ -9,10 +9,9 @@ set -euo pipefail
 
 TOPDIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)"
 EXTERNAL_DIR="$TOPDIR/package/xg040-feeds"
-PATCH_FILE="$TOPDIR/patches/luci-app-airoha-npu-readonly.patch"
 WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/xg040g-md-feeds.XXXXXX")"
 # All external inputs are fixed to reviewed commits.  Update a ref and its
-# commit deliberately, then refresh the NPU patch when that package changes.
+# commit deliberately when an upstream package changes.
 AIROHA_NPU_REF="main"
 AIROHA_NPU_COMMIT="14521b8414da1e98517a295d8ec267087c7dde8e"
 OPENCLASH_REF="dev"
@@ -110,43 +109,39 @@ copy_package_tree() {
 	)
 }
 
-assert_readonly_npu() {
+assert_full_npu_controls() {
 	local npu_dir="$EXTERNAL_DIR/luci-app-airoha-npu"
 	local rpc="$npu_dir/root/usr/libexec/rpcd/luci.airoha_npu"
 	local acl="$npu_dir/root/usr/share/rpcd/acl.d/luci-app-airoha-npu.json"
 	local ui="$npu_dir/htdocs/luci-static/resources/view/airoha_npu/status.js"
+	local method handler
 
 	require_file "$rpc"
 	require_file "$acl"
 	require_file "$ui"
 
-	# Validate the actual control surface, then verify that no private mutator
-	# or register/sysfs write survived the read-only patch.  Printing matching
-	# lines makes a future upstream change diagnosable directly from CI logs.
-	if grep -En 'setGovernor|setMaxFreq|setOverclock' "$rpc" "$acl" "$ui"; then
-		die "the NPU package still exposes a public write/overclock control"
-	fi
-	if grep -En '"write"[[:space:]]*:' "$acl"; then
-		die "the NPU ACL still grants write access"
-	fi
-	if grep -En '^[[:space:]]*(set_governor|set_max_freq|set_overclock)[[:space:]]*\(\)' "$rpc"; then
-		die "the NPU backend still contains a CPU/NPU mutator"
-	fi
-	if grep -En '^[[:space:]]*devmem[[:space:]]+[^[:space:]]+[[:space:]]+(8|16|32|64)[[:space:]]+' "$rpc"; then
-		die "the NPU backend still contains a devmem write"
-	fi
-	if grep -En '>[[:space:]]*/sys/devices/system/cpu/cpufreq/[^[:space:]]+/scaling_(governor|max_freq)' "$rpc"; then
-		die "the NPU backend still contains a CPU frequency write"
-	fi
+	# The source is pinned, but keep a positive contract here so a future source
+	# refresh cannot silently drop the original governor/frequency/PLL controls.
+	for method in setGovernor setMaxFreq setOverclock; do
+		grep -Fq -- "method: '$method'" "$ui" || die "NPU LuCI control is missing: $method"
+		grep -Fq -- "\"$method\"" "$rpc" || die "NPU RPC control is missing: $method"
+		grep -Fq -- "\"$method\"" "$acl" || die "NPU ACL control is missing: $method"
+	done
+	grep -Eq '"write"[[:space:]]*:' "$acl" || die "NPU ACL does not grant write access"
+	for handler in set_governor set_max_freq set_overclock configure_armpll; do
+		grep -Fq -- "$handler()" "$rpc" || die "NPU backend is missing: $handler"
+	done
+	grep -Fq -- 'devmem $CR_CPUPLL_SDM_PCW 32' "$rpc" || die "NPU PLL write path is missing"
+	grep -Fq -- 'function renderOcControls' "$ui" || die "NPU overclock panel is missing"
 }
 
 main() {
 	assert_pon_baseline
-	require_file "$PATCH_FILE"
 	reset_external_dir
 
-	# A patch mismatch aborts the build instead of silently restoring NPU write
-	# APIs.  The declared branch labels are for auditing; the commit is fetched.
+	# The declared branch labels are for auditing; immutable commits are fetched.
+	# The NPU package is copied unchanged so its original LuCI CPU/PLL controls
+	# (governor, maximum frequency and overclock) remain available.
 	clone_repo airoha-npu https://github.com/rchen14b/luci-app-airoha-npu.git "$AIROHA_NPU_REF" "$AIROHA_NPU_COMMIT"
 	clone_repo openclash https://github.com/vernesong/OpenClash.git "$OPENCLASH_REF" "$OPENCLASH_COMMIT"
 	clone_repo mosdns https://github.com/sbwml/luci-app-mosdns.git "$MOSDNS_REF" "$MOSDNS_COMMIT"
@@ -163,10 +158,7 @@ main() {
 	done
 
 	copy_package_tree "$WORKDIR/airoha-npu" . luci-app-airoha-npu
-	git -C "$EXTERNAL_DIR/luci-app-airoha-npu" apply --no-index --check "$PATCH_FILE"
-	git -C "$EXTERNAL_DIR/luci-app-airoha-npu" apply --no-index "$PATCH_FILE"
-	assert_readonly_npu
-
+	assert_full_npu_controls
 	copy_package_tree "$WORKDIR/openclash" luci-app-openclash luci-app-openclash
 	copy_package_tree "$WORKDIR/mosdns" mosdns mosdns
 	copy_package_tree "$WORKDIR/mosdns" luci-app-mosdns luci-app-mosdns
