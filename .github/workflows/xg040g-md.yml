@@ -72,10 +72,11 @@ jobs:
 
       - name: Configure the protected single-device image
         run: |
+          # kconfig.pl consumes binary expressions; nest the second merge.
           ./scripts/kconfig.pl + \
             configs/an7581.config \
-            configs/release.config \
-            configs/xg040g-md.config > .config
+            + configs/release.config \
+              configs/xg040g-md.config > .config
           make defconfig
 
       - name: Verify target, offload, plugin and exclusion contract
