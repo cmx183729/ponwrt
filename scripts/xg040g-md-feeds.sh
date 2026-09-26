@@ -109,6 +109,38 @@ copy_package_tree() {
 	)
 }
 
+copy_npu_package_tree() {
+	local source_dir="$WORKDIR/airoha-npu"
+	local destination="$EXTERNAL_DIR/luci-app-airoha-npu"
+	local legacy_dir="$destination/luci-app-airoha-npu"
+
+	require_file "$source_dir/Makefile"
+	mkdir -p "$destination"
+	(
+		cd "$source_dir"
+		# The pinned upstream repository also carries an obsolete package-layout
+		# copy under ./luci-app-airoha-npu.  Its relative luci.mk include is not
+		# valid after materializing this package, and OpenWrt's basename-based
+		# package scan can select it instead of the real top-level package.
+		# Exclude only that duplicate tree; the top-level original package keeps
+		# its complete governor, maximum-frequency and PLL overclock controls.
+		tar --exclude-vcs \
+			--exclude='./luci-app-airoha-npu' \
+			--exclude='./luci-app-airoha-npu/*' \
+			-cf - .
+	) | (
+		cd "$destination"
+		tar -xf -
+	)
+
+	require_file "$destination/Makefile"
+	if [ -e "$legacy_dir" ] || [ -L "$legacy_dir" ]; then
+		die "legacy nested NPU package Makefile was copied: $legacy_dir"
+	fi
+	grep -Fq -- 'include $(TOPDIR)/feeds/luci/luci.mk' "$destination/Makefile" || \
+		die "top-level NPU package Makefile is not the compatible package layout"
+}
+
 assert_full_npu_controls() {
 	local npu_dir="$EXTERNAL_DIR/luci-app-airoha-npu"
 	local rpc="$npu_dir/root/usr/libexec/rpcd/luci.airoha_npu"
@@ -157,7 +189,7 @@ main() {
 		remove_feed_symlink "$package_name"
 	done
 
-	copy_package_tree "$WORKDIR/airoha-npu" . luci-app-airoha-npu
+	copy_npu_package_tree
 	assert_full_npu_controls
 	copy_package_tree "$WORKDIR/openclash" luci-app-openclash luci-app-openclash
 	copy_package_tree "$WORKDIR/mosdns" mosdns mosdns
