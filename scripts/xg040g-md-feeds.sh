@@ -22,8 +22,6 @@ GEODATA_REF="master"
 GEODATA_COMMIT="2e3845caae172326f02b3406048c7a3613f3dee5"
 ISTORE_REF="main"
 ISTORE_COMMIT="a97ace34f2da358a015b094d326bba2697697f2e"
-MIHOMO_REF="main"
-MIHOMO_COMMIT="7b203f6c4c5e94c6c0026acb301090aa1d310e7f"
 
 cleanup() {
 	rm -rf -- "$WORKDIR"
@@ -179,13 +177,12 @@ main() {
 	clone_repo mosdns https://github.com/sbwml/luci-app-mosdns.git "$MOSDNS_REF" "$MOSDNS_COMMIT"
 	clone_repo geodata https://github.com/sbwml/v2ray-geodata.git "$GEODATA_REF" "$GEODATA_COMMIT"
 	clone_repo istore https://github.com/linkease/istore.git "$ISTORE_REF" "$ISTORE_COMMIT"
-	clone_repo mihomo https://github.com/nikkinikki-org/OpenWrt-nikki.git "$MIHOMO_REF" "$MIHOMO_COMMIT"
 
 	# Replace only links created by scripts/feeds.  Never remove feed source trees.
 	local package_name
 	for package_name in \
 		luci-app-airoha-npu luci-app-openclash mosdns luci-app-mosdns geo2txt \
-		v2ray-geodata luci-app-store luci-lib-taskd luci-lib-xterm taskd mihomo-meta; do
+		v2ray-geodata luci-app-store luci-lib-taskd luci-lib-xterm taskd; do
 		remove_feed_symlink "$package_name"
 	done
 
@@ -200,7 +197,6 @@ main() {
 	copy_package_tree "$WORKDIR/istore" luci/luci-lib-taskd luci-lib-taskd
 	copy_package_tree "$WORKDIR/istore" luci/luci-lib-xterm luci-lib-xterm
 	copy_package_tree "$WORKDIR/istore" luci/taskd taskd
-	copy_package_tree "$WORKDIR/mihomo" mihomo-meta mihomo-meta
 
 	echo "xg040g-md-feeds: selected external packages are ready in $EXTERNAL_DIR"
 }

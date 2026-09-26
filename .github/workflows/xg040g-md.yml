@@ -92,8 +92,6 @@ jobs:
             'CONFIG_PACKAGE_kmod-nf-flow=y'
             'CONFIG_PACKAGE_kmod-nft-offload=y'
             'CONFIG_PACKAGE_luci-app-openclash=y'
-            'CONFIG_PACKAGE_mihomo-meta=y'
-            'CONFIG_PACKAGE_xg040-openclash-core-link=y'
             'CONFIG_PACKAGE_luci-app-mosdns=y'
             'CONFIG_PACKAGE_mosdns=y'
             'CONFIG_PACKAGE_adguardhome=y'
