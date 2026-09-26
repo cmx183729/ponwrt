@@ -97,6 +97,7 @@ jobs:
             'CONFIG_PACKAGE_luci-app-mosdns=y'
             'CONFIG_PACKAGE_mosdns=y'
             'CONFIG_PACKAGE_adguardhome=y'
+            'CONFIG_PACKAGE_xz-utils=y'
             'CONFIG_PACKAGE_luci-app-store=y'
             'CONFIG_PACKAGE_taskd=y'
             'CONFIG_PACKAGE_luci-app-pbr=y'
